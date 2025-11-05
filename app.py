@@ -1,5 +1,5 @@
 # app.py
-# Full F&O ATM/-1 ITM Option Scanner — Streamlit (requests-based)
+# Full F&O ATM/-1 ITM Option Scanner — Streamlit (auto-refresh every 15 min)
 # Requirements: streamlit, pandas, numpy, requests
 
 import streamlit as st
@@ -9,11 +9,11 @@ import requests
 import time
 from datetime import datetime
 
-st.set_page_config(page_title="Full F&O Option Scanner", layout="wide")
-st.title("💥 Full F&O ATM & -1 ITM Option Scanner — Volume + Premium Spike")
-st.caption("Scans 200+ NSE F&O stocks for ATM & -1 ITM option strikes with volume and premium analysis.")
+st.set_page_config(page_title="Live F&O Option Scanner", layout="wide", page_icon="💹")
+st.title("⚡ Live F&O ATM & -1 ITM Option Scanner")
+st.caption("Scans 200+ NSE F&O stocks for ATM & -1 ITM strikes, highlights volume & premium spikes. Auto-refresh every 15 min.")
 
-# ---------------- Sidebar controls ----------------
+# ---------------- Sidebar ----------------
 with st.sidebar:
     st.header("Scanner Settings")
     expiry_text = st.text_input("Expiry (optional, e.g. 28NOV2025)", value="")
@@ -21,10 +21,11 @@ with st.sidebar:
     scan_limit = st.number_input("Number of F&O stocks to scan (max 250)", 5, 250, 50, 5)
     delay = st.number_input("Delay between requests (sec)", 0.2, 5.0, 1.0, 0.1)
     top_n = st.number_input("Show Top N Results", 5, 200, 50, 1)
+    refresh_min = st.number_input("Auto Refresh Interval (minutes)", 1, 60, 15, 1)
     st.markdown("---")
-    st.caption("💡 Recommendation: Start small (scan_limit 30, delay 1s) to avoid temporary blocks.")
+    st.caption("💡 Recommendation: Use scan_limit 20-50 and delay 1s for first run.")
 
-# ---------------- Full verified F&O symbols ----------------
+# ---------------- F&O symbols ----------------
 def get_fo_symbols():
     fo_list = [
         "ABB","ACC","ADANIENT","ADANIPORTS","ALKEM","AMBUJACEM","APOLLOHOSP","APOLLOTYRE","ASHOKLEY",
@@ -53,24 +54,19 @@ def get_fo_symbols():
 
 # ---------------- Utilities ----------------
 def nearest_strike(price, step=50):
-    try:
-        return int(round(price / step) * step)
-    except:
-        return None
+    try: return int(round(price / step) * step)
+    except: return None
 
-def safe_div(a, b):
-    try:
-        return a / b if b != 0 else 0
-    except:
-        return 0
+def safe_div(a,b):
+    try: return a/b if b !=0 else 0
+    except: return 0
 
 def compute_premium_pct(ltp, change):
     prev = ltp - change
-    if prev and prev != 0:
-        return (change / prev) * 100
+    if prev and prev != 0: return (change/prev)*100
     return 0
 
-# ---------------- Fetch option chain using NSE API (requests) ----------------
+# ---------------- Fetch NSE Option Chain ----------------
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 def fetch_option_chain(symbol):
@@ -85,66 +81,58 @@ def fetch_option_chain(symbol):
 
 def process_symbol(sym, vol_multiplier):
     data = fetch_option_chain(sym)
-    if not data or "records" not in data:
-        return []
-
+    if not data or "records" not in data: return []
     rec = data["records"]
     underlying = rec.get("underlyingValue", None)
     rows = rec.get("data", [])
-    if not underlying or not rows:
-        return []
+    if not underlying or not rows: return []
 
-    flat = []
+    flat=[]
     for r in rows:
         sp = r.get("strikePrice")
-        for t in ["CE", "PE"]:
+        for t in ["CE","PE"]:
             if t in r:
                 d = r[t]
                 flat.append({
                     "Strike": sp,
                     "Type": t,
-                    "LTP": d.get("lastPrice", 0),
-                    "Change": d.get("change", 0),
-                    "Volume": d.get("totalTradedVolume", 0),
-                    "OI": d.get("openInterest", 0),
-                    "OI Change": d.get("changeinOpenInterest", 0)
+                    "LTP": d.get("lastPrice",0),
+                    "Change": d.get("change",0),
+                    "Volume": d.get("totalTradedVolume",0),
+                    "OI": d.get("openInterest",0),
+                    "OI Change": d.get("changeinOpenInterest",0)
                 })
     df = pd.DataFrame(flat)
-    if df.empty:
-        return []
+    if df.empty: return []
 
     strikes = sorted(df["Strike"].unique())
     step = 50
     if len(strikes) > 1:
         diffs = np.diff(strikes)
-        try:
-            mode = pd.Series(diffs).mode().iloc[0]
-            if mode > 0:
-                step = int(mode)
-        except:
-            step = 50
+        try: step=int(pd.Series(diffs).mode().iloc[0])
+        except: step=50
 
     atm = nearest_strike(underlying, step)
-    target = [atm, max(0, atm - step)]
-    med_vol = df["Volume"].replace(0, np.nan).median() or 1
+    target=[atm, max(0, atm-step)]
+    med_vol = df["Volume"].replace(0,np.nan).median() or 1
 
-    candidates = []
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    candidates=[]
+    now=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     for ts in target:
-        part = df[df["Strike"] == ts]
-        for _, r in part.iterrows():
-            ltp = float(r["LTP"]) if not pd.isna(r["LTP"]) else 0.0
-            change = float(r["Change"]) if not pd.isna(r["Change"]) else 0.0
-            vol = float(r["Volume"]) if not pd.isna(r["Volume"]) else 0.0
-            oi = int(r["OI"]) if not pd.isna(r["OI"]) else 0
-            oi_chg = float(r["OI Change"]) if not pd.isna(r["OI Change"]) else 0.0
+        part = df[df["Strike"]==ts]
+        for _,r in part.iterrows():
+            ltp=float(r["LTP"]) if not pd.isna(r["LTP"]) else 0.0
+            change=float(r["Change"]) if not pd.isna(r["Change"]) else 0.0
+            vol=float(r["Volume"]) if not pd.isna(r["Volume"]) else 0.0
+            oi=int(r["OI"]) if not pd.isna(r["OI"]) else 0
+            oi_chg=float(r["OI Change"]) if not pd.isna(r["OI Change"]) else 0.0
 
-            prem = compute_premium_pct(ltp, change)
-            v_ratio = safe_div(vol, med_vol)
-            oi_pct = safe_div(oi_chg, max(1, oi)) * 100.0
-            score = v_ratio * (1 + prem / 100.0)
+            prem = compute_premium_pct(ltp,change)
+            v_ratio = safe_div(vol,med_vol)
+            oi_pct = safe_div(oi_chg,max(1,oi))*100
+            score = v_ratio*(1+prem/100)
 
-            if v_ratio >= vol_multiplier:
+            if v_ratio>=vol_multiplier:
                 candidates.append({
                     "Symbol": sym,
                     "Expiry": expiry_text or "",
@@ -162,33 +150,34 @@ def process_symbol(sym, vol_multiplier):
                 })
     return candidates
 
-# ---------------- Run Scan ----------------
-if st.button("🚀 Run Full F&O Scan"):
-    st.info("Preparing list of F&O symbols...")
+# ---------------- Auto-refresh & Run Scan ----------------
+def run_scan():
     fo_symbols = get_fo_symbols()
-    st.success(f"Total F&O symbols (loaded): {len(fo_symbols)}")
-
-    results = []
-    prog = st.progress(0)
-    total = min(len(fo_symbols), int(scan_limit))
-    for i, sym in enumerate(fo_symbols[:total]):
+    results=[]
+    prog=st.progress(0)
+    total=min(len(fo_symbols), int(scan_limit))
+    for i,sym in enumerate(fo_symbols[:total]):
         with st.spinner(f"→ Scanning {sym} ({i+1}/{total})"):
-            try:
-                res = process_symbol(sym, vol_multiplier)
-                if res:
-                    results.extend(res)
-            except Exception as e:
-                st.warning(f"Error for {sym}: {e}")
+            try: res=process_symbol(sym,vol_multiplier)
+            except: res=[]
+            if res: results.extend(res)
         prog.progress(int((i+1)/total*100))
         time.sleep(delay)
+    return results
 
-    if not results:
-        st.warning("No spikes found — try lowering Volume multiplier or increase scan_limit.")
-    else:
-        df = pd.DataFrame(results)
-        df = df.sort_values(by="Score", ascending=False).reset_index(drop=True)
-        top = df.head(int(top_n))
-        st.subheader(f"Top {len(top)} Option Spikes (ATM & -1 ITM)")
-        st.dataframe(top, use_container_width=True)
-        csv = top.to_csv(index=False).encode()
-        st.download_button("📥 Download CSV", csv, "fo_option_scanner.csv", mime="text/csv")
+st.info(f"Auto-refreshing every {refresh_min} minutes...")
+
+placeholder=st.empty()
+while True:
+    with placeholder.container():
+        results=run_scan()
+        if not results:
+            st.warning("No spikes found — try lowering Volume multiplier or increase scan_limit.")
+        else:
+            df=pd.DataFrame(results).sort_values(by="Score",ascending=False).reset_index(drop=True)
+            top=df.head(int(top_n))
+            st.subheader(f"Top {len(top)} Option Spikes (ATM & -1 ITM)")
+            st.dataframe(top,use_container_width=True)
+            csv=top.to_csv(index=False).encode()
+            st.download_button("📥 Download CSV",csv,"fo_option_scanner.csv",mime="text/csv")
+    time.sleep(refresh_min*60)
