@@ -1,20 +1,23 @@
 import streamlit as st
 import pandas as pd
+import time
 from nsepython import nse_optionchain_scrapper
 
-# -------------------- Page Config --------------------
+# -------------------- Page Setup --------------------
 st.set_page_config(page_title="Live NSE Option Scanner", layout="wide")
+st.title("⚡ NSE Live F&O Option Scanner (Auto Refresh + Filters)")
+st.caption("Developed for personal live option data scanning")
 
-st.title("⚡ NSE Live F&O Option Scanner")
-st.markdown("Get real-time **Option Chain data** directly from NSE in one click.")
+# -------------------- Sidebar Controls --------------------
+with st.sidebar:
+    st.header("⚙️ Scanner Settings")
+    symbol = st.selectbox("Select Stock", ["RELIANCE", "INFY", "HDFCBANK", "TCS", "ICICIBANK", "SBIN", "LT", "AXISBANK"])
+    expiry = st.text_input("Expiry Month (e.g. 28NOV2024)", "28NOV2024")
+    volume_mult = st.slider("Volume Multiplier", 1, 20, 5)
+    refresh_time = st.slider("Auto Refresh (seconds)", 10, 120, 30)
+    auto_refresh = st.checkbox("🔁 Auto Refresh ON", value=True)
 
-# -------------------- Stock Selection --------------------
-symbol = st.selectbox(
-    "Select F&O Stock Symbol 👇",
-    ["RELIANCE", "INFY", "HDFCBANK", "TCS", "ICICIBANK", "SBIN", "LT", "AXISBANK"],
-)
-
-# -------------------- Function to Fetch Live Data --------------------
+# -------------------- Function: Fetch Option Data --------------------
 def get_live_option_data(symbol):
     try:
         data = nse_optionchain_scrapper(symbol)
@@ -37,25 +40,35 @@ def get_live_option_data(symbol):
                 "changeinOpenInterest",
             ]
         ]
-
         df.columns = ["Strike", "Type", "LTP", "%Change", "Volume", "OI", "OI Change"]
         df = df.sort_values(by=["Strike", "Type"]).reset_index(drop=True)
         return df
-
     except Exception as e:
         st.error(f"❌ Error fetching live data: {e}")
         return pd.DataFrame()
 
-# -------------------- Fetch Button --------------------
-if st.button("🔄 Get Live Data"):
-    with st.spinner("Fetching latest option data..."):
-        df = get_live_option_data(symbol)
-        if not df.empty:
-            st.success("✅ Live data connected successfully!")
-            st.dataframe(df, use_container_width=True)
-            csv = df.to_csv(index=False).encode("utf-8")
-            st.download_button("📥 Download CSV", data=csv, file_name=f"{symbol}_options.csv", mime="text/csv")
-        else:
-            st.warning("⚠️ No data received, try again later.")
+# -------------------- Live Display with Auto Refresh --------------------
+placeholder = st.empty()
+
+def display_data():
+    df = get_live_option_data(symbol)
+    if not df.empty:
+        df_filtered = df[df["Volume"] > (df["Volume"].mean() * volume_mult)]
+        st.success(f"✅ Live data for {symbol} | Expiry: {expiry}")
+        st.dataframe(df_filtered, use_container_width=True)
+        csv = df_filtered.to_csv(index=False).encode("utf-8")
+        st.download_button("📥 Download CSV", data=csv, file_name=f"{symbol}_options.csv", mime="text/csv")
+    else:
+        st.warning("⚠️ No live data received. Try again.")
+
+# -------------------- Main Loop --------------------
+if auto_refresh:
+    while True:
+        with placeholder.container():
+            display_data()
+            st.info(f"🔁 Auto-refreshing every {refresh_time} seconds...")
+        time.sleep(refresh_time)
 else:
-    st.info("👆 Select a stock and click 'Get Live Data' to start scanning.")
+    if st.button("🔄 Get Live Data"):
+        with placeholder.container():
+            display_data()
