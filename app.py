@@ -47,21 +47,29 @@ def get_live_option_data(symbol):
         st.error(f"❌ Error fetching live data: {e}")
         return pd.DataFrame()
 
-# -------------------- Live Display with Auto Refresh --------------------
-placeholder = st.empty()
-
+# -------------------- Live Display Function --------------------
 def display_data():
     df = get_live_option_data(symbol)
     if not df.empty:
         df_filtered = df[df["Volume"] > (df["Volume"].mean() * volume_mult)]
         st.success(f"✅ Live data for {symbol} | Expiry: {expiry}")
         st.dataframe(df_filtered, use_container_width=True)
+
+        # download button with unique key to prevent duplicate ID error
         csv = df_filtered.to_csv(index=False).encode("utf-8")
-        st.download_button("📥 Download CSV", data=csv, file_name=f"{symbol}_options.csv", mime="text/csv")
+        st.download_button(
+            "📥 Download CSV",
+            data=csv,
+            file_name=f"{symbol}_options.csv",
+            mime="text/csv",
+            key=f"download_{time.time()}",  # unique key each refresh
+        )
     else:
         st.warning("⚠️ No live data received. Try again.")
 
-# -------------------- Main Loop --------------------
+# -------------------- Main Logic --------------------
+placeholder = st.empty()
+
 if auto_refresh:
     while True:
         with placeholder.container():
