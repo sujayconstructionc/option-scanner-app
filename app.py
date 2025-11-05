@@ -1,11 +1,9 @@
-# app.py
-# NSE F&O ATM/-1 ITM Option Scanner — Auto Symbol List + Volume & Premium Spike
 import streamlit as st
 import pandas as pd
 import numpy as np
+import requests
 import time
 from datetime import datetime
-from nsepython import nse_optionchain_scrapper, nse_eq_symbol_list
 import math
 
 st.set_page_config(page_title="Full F&O Option Scanner", layout="wide")
@@ -16,23 +14,31 @@ st.caption("Automatically scans all F&O stocks for ATM & -1 ITM option strikes w
 # ---------------- Sidebar controls ----------------
 with st.sidebar:
     st.header("Scanner Settings")
-    expiry_text = st.text_input("Expiry Month (e.g. 28NOV2024)", value="")
-    timeframe = st.selectbox("Timeframe (label only)", ["1m", "5m", "15m"], index=2)
+    expiry_text = st.text_input("Expiry (example: 28NOV2024)", value="")
     vol_multiplier = st.number_input("Volume Spike Multiplier", 1.0, 20.0, 2.0, 0.1)
-    scan_limit = st.number_input("Number of F&O stocks to scan (max 200+)", 5, 250, 50, 5)
+    scan_limit = st.number_input("Number of F&O stocks to scan (max 200)", 5, 250, 50, 5)
     delay = st.number_input("Delay between requests (sec)", 0.5, 5.0, 1.0, 0.1)
     top_n = st.number_input("Show Top N Results", 5, 100, 25, 1)
     st.markdown("---")
-    st.caption("💡 You can increase scan limit later to include all 200+ stocks.")
+    st.caption("💡 Increase scan limit to include all F&O stocks later.")
+
+# ---------- F&O Stocks List ----------
+def get_fo_symbols():
+    url = "https://www.nseindia.com/api/liveEquity-derivatives?index=nse500"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        res = requests.get(url, headers=headers, timeout=10)
+        data = res.json()
+        syms = sorted(list({x["symbol"] for x in data["data"]}))
+        return syms
+    except Exception:
+        return ["RELIANCE", "SBIN", "INFY", "HDFCBANK", "ICICIBANK"]
 
 def nearest_strike(price, step=50):
     return int(round(price / step) * step)
 
 def safe_div(a, b):
-    try:
-        return a / b if b != 0 else 0
-    except:
-        return 0
+    return a / b if b != 0 else 0
 
 def compute_premium_pct(ltp, change):
     prev = ltp - change
@@ -40,23 +46,26 @@ def compute_premium_pct(ltp, change):
         return (change / prev) * 100
     return 0
 
-def get_all_fo_symbols():
-    df = nse_eq_symbol_list()
-    fo_list = df[df["series"] == "EQ"]["symbol"].unique().tolist()
-    fo_list.sort()
-    return fo_list
-
-@st.cache_data(ttl=3600)
-def fetch_and_process(sym, vol_multiplier):
+def fetch_option_chain(symbol):
+    url = f"https://www.nseindia.com/api/option-chain-equities?symbol={symbol.upper()}"
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        raw = nse_optionchain_scrapper(sym)
-    except Exception as e:
+        s = requests.Session()
+        s.get("https://www.nseindia.com", headers=headers)
+        res = s.get(url, headers=headers, timeout=10)
+        return res.json()
+    except Exception:
+        return None
+
+def process_symbol(sym, vol_multiplier):
+    data = fetch_option_chain(sym)
+    if not data or "records" not in data:
         return []
 
-    rec = raw.get("records", {})
+    rec = data["records"]
     underlying = rec.get("underlyingValue", None)
     rows = rec.get("data", [])
-    if not rows:
+    if not underlying or not rows:
         return []
 
     flat = []
@@ -83,7 +92,8 @@ def fetch_and_process(sym, vol_multiplier):
     if len(strikes) > 1:
         diffs = np.diff(strikes)
         mode = pd.Series(diffs).mode().iloc[0]
-        if mode > 0: step = mode
+        if mode > 0:
+            step = mode
 
     atm = nearest_strike(underlying, step)
     target = [atm, atm - step]
@@ -105,21 +115,21 @@ def fetch_and_process(sym, vol_multiplier):
                     "Symbol": sym,
                     "Strike": ts,
                     "Type": r["Type"],
-                    "LTP": round(ltp,2),
-                    "Premium%": round(prem,2),
+                    "LTP": round(ltp, 2),
+                    "Premium%": round(prem, 2),
                     "Vol": int(vol),
-                    "VolRatio": round(v_ratio,2),
+                    "VolRatio": round(v_ratio, 2),
                     "OI": int(r["OI"]),
                     "OIChg": int(r["OI Change"]),
-                    "Score": round(score,2),
+                    "Score": round(score, 2),
                     "Time": now
                 })
     return candidates
 
-# ---------------- Scan run ----------------
+# ---------- Scan run ----------
 if st.button("🚀 Run Full F&O Scan"):
     st.info("Fetching all F&O symbols, please wait...")
-    fo_symbols = get_all_fo_symbols()
+    fo_symbols = get_fo_symbols()
     st.success(f"Total F&O symbols found: {len(fo_symbols)}")
 
     results = []
@@ -127,9 +137,9 @@ if st.button("🚀 Run Full F&O Scan"):
     total = min(len(fo_symbols), int(scan_limit))
     for i, sym in enumerate(fo_symbols[:total]):
         with st.spinner(f"Scanning {sym} ({i+1}/{total})..."):
-            res = fetch_and_process(sym, vol_multiplier)
+            res = process_symbol(sym, vol_multiplier)
             results.extend(res)
-            prog.progress(int((i+1)/total*100))
+            prog.progress(int((i + 1) / total * 100))
             time.sleep(delay)
 
     if not results:
