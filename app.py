@@ -1,236 +1,117 @@
-# app.py
-# F&O Option Scanner + Today's Top Gainers
-# Requirements: streamlit, pandas, numpy, requests
-
 import streamlit as st
 import pandas as pd
-import numpy as np
-import requests
+import datetime
 import time
-from datetime import datetime
+from nsepython import nse_optionchain_scrapper
 
-st.set_page_config(page_title="Live F&O Option Scanner", layout="wide", page_icon="💹")
-st.title("⚡ Live F&O Option Scanner + Today's Top Gainers")
+st.set_page_config(page_title="Full F&O Option Scanner", layout="wide")
 
-# ---------------- Sidebar ----------------
-with st.sidebar:
-    st.header("Scanner Settings")
-    expiry_text = st.text_input("Expiry (optional, e.g. 28NOV2025)", value="")
-    vol_multiplier = st.number_input("Volume Spike Multiplier", 1.0, 20.0, 2.0, 0.1)
-    scan_limit = st.number_input("Number of F&O stocks to scan (max 250)", 5, 250, 50, 5)
-    delay = st.number_input("Delay between requests (sec)", 0.2, 5.0, 1.0, 0.1)
-    top_n = st.number_input("Show Top N Results (Main Scanner)", 5, 200, 50, 1)
-    refresh_min = st.number_input("Auto Refresh Interval (minutes)", 1, 60, 15, 1)
-    st.markdown("---")
-    st.caption("💡 Recommendation: Use scan_limit 20-50 and delay 1s for first run.")
+st.title("📊 F&O Option Scanner — Live + Top 15 Premium Gainers")
 
-# ---------------- F&O symbols ----------------
-def get_fo_symbols():
-    fo_list = [
-        "ABB","ACC","ADANIENT","ADANIPORTS","ALKEM","AMBUJACEM","APOLLOHOSP","APOLLOTYRE","ASHOKLEY",
-        "ASIANPAINT","AUBANK","AUROPHARMA","AXISBANK","BAJAJ-AUTO","BAJAJFINSV","BAJFINANCE","BALKRISIND",
-        "BANDHANBNK","BANKBARODA","BATAINDIA","BEL","BERGEPAINT","BHARATFORG","BHARTIARTL","BHEL","BIOCON",
-        "BOSCHLTD","BPCL","BRITANNIA","CANBK","CANFINHOME","CHAMBLFERT","CHOLAFIN","CIPLA","COALINDIA",
-        "COFORGE","COLPAL","CONCOR","COROMANDEL","CROMPTON","CUB","CUMMINSIND","DABUR","DALBHARAT","DEEPAKNTR",
-        "DIVISLAB","DIXON","DLF","DRREDDY","EICHERMOT","ESCORTS","EXIDEIND","FEDERALBNK","GAIL","GLENMARK",
-        "GMRINFRA","GNFC","GODREJCP","GRASIM","GUJGASLTD","HAL","HAVELLS","HCLTECH","HDFCAMC","HDFCBANK",
-        "HDFCLIFE","HEROMOTOCO","HINDALCO","HINDCOPPER","HINDPETRO","HINDUNILVR","IBULHSGFIN","ICICIBANK",
-        "ICICIGI","ICICIPRULI","IDFC","IDFCFIRSTB","IEX","IGL","INDHOTEL","INDIACEM","INDIGO","INDUSINDBK",
-        "INDUSTOWER","INFY","IOC","IPCALAB","ITC","JINDALSTEL","JKCEMENT","JSWSTEEL","JUBLFOOD","KOTAKBANK",
-        "L&TFH","LAURUSLABS","LICHSGFIN","LT","LTIM","LUPIN","M&M","M&MFIN","MANAPPURAM","MARICO","MARUTI",
-        "MCDOWELL-N","MCX","METROPOLIS","MOTHERSON","MPHASIS","MRF","MUTHOOTFIN","NAM-INDIA","NAUKRI","NAVINFLUOR",
-        "NESTLEIND","NMDC","NTPC","OBEROIRLTY","OFSS","ONGC","PAGEIND","PEL","PERSISTENT","PETRONET","PFC",
-        "PIDILITIND","PIIND","PNB","POLYCAB","POWERGRID","PVRINOX","RAMCOCEM","RBLBANK","RECLTD","RELIANCE",
-        "SAIL","SBICARD","SBILIFE","SBIN","SHREECEM","SIEMENS","SRF","SUNPHARMA","SUNTV","SYNGENE","TATACHEM",
-        "TATACOMM","TATACONSUM","TATAMOTORS","TATAPOWER","TATASTEEL","TCS","TECHM","TITAN","TORNTPHARM","TORNTPOWER",
-        "TRENT","TVSMOTOR","UBL","ULTRACEMCO","UPL","VBL","VEDL","VOLTAS","WHIRLPOOL","WIPRO","ZEEL","ZYDUSLIFE",
-        "BALRAMCHIN","BANKINDIA","CENTURYTEX","GUJGASLTD","IIFL","IRCTC","JSWENERGY","NHPC","PNBHOUSING","RVNL",
-        "TATAMTRDVR","TATAMTRNV","UNIONBANK","YESBANK","IRB","COCHINSHIP","POWERINDIA","INDIACEM","IDEA","CESC",
-        "IDBI","NBCC","RAIN","RITES","HINDZINC","BEML","HUDCO","ITI","TIMKEN","PAYTM","KAYNES","AARTIIND",
-        "POONAWALLA","KEI","DELTACORP","JYOTHYLAB","KPITTECH","POLYMED","MAZDOCK","COCHINSHIP"
-    ]
-    return sorted(list(set(fo_list)))
+# ---- Sidebar ----
+st.sidebar.header("⚙️ Scanner Settings")
+expiry = st.sidebar.text_input("Expiry (e.g. 28NOV2024)", "28NOV2024")
+refresh_interval = st.sidebar.slider("Auto Refresh (seconds)", 30, 300, 60)
 
-# ---------------- Utilities ----------------
-HEADERS = {"User-Agent": "Mozilla/5.0"}
-def nearest_strike(price, step=50):
-    try: return int(round(price / step) * step)
-    except: return None
-def safe_div(a,b):
-    try: return a/b if b !=0 else 0
-    except: return 0
-def compute_premium_pct(ltp, change):
-    prev = ltp - change
-    if prev and prev != 0: return (change/prev)*100
-    return 0
-def fetch_option_chain(symbol):
-    url = f"https://www.nseindia.com/api/option-chain-equities?symbol={symbol}"
+# ---- Global Variables ----
+if "baseline_data" not in st.session_state:
+    st.session_state.baseline_data = {}
+
+# ---- F&O Stocks ----
+fo_stocks = [
+    "RELIANCE","HDFCBANK","ICICIBANK","INFY","SBIN","TCS","AXISBANK","LT","KOTAKBANK",
+    "HINDUNILVR","ITC","BAJFINANCE","ADANIENT","ADANIPORTS","MARUTI","SUNPHARMA","TITAN",
+    "ULTRACEMCO","POWERGRID","NESTLEIND","ONGC","TATAMOTORS","NTPC","JSWSTEEL","TATASTEEL",
+    "BHARTIARTL","WIPRO","GRASIM","BPCL","EICHERMOT","CIPLA","BRITANNIA","HCLTECH",
+    "DRREDDY","COALINDIA","BAJAJFINSV","HDFCLIFE","HEROMOTOCO","TECHM","SBILIFE",
+    "DIVISLAB","HINDALCO","INDUSINDBK","UPL","TATACONSUM","APOLLOHOSP","BAJAJ-AUTO",
+    "ICICIPRULI","ADANIGREEN","DLF","TORNTPHARM","PIDILITIND","SHREECEM","M&M","TRENT",
+    "AMBUJACEM","ADANIPOWER","BANKBARODA","VEDL","GAIL","INDIGO","BEL","BANDHANBNK",
+    "PNB","COLPAL","CANBK","IDFCFIRSTB","PAYTM","ZOMATO","TATAPOWER","ACC","GODREJCP",
+    "UBL","TVSMOTOR","IOC","HINDPETRO","POLYCAB","IRCTC","CHOLAFIN","INDHOTEL","AUROPHARMA",
+    "TATACHEM","ASHOKLEY","BIOCON","BOSCHLTD","RECLTD","NMDC","PFC","ABB","OFSS","LUPIN",
+    "CONCOR","MFSL","NAUKRI","CUMMINSIND","HAVELLS","SRF","JINDALSTEL","PIIND","PAGEIND",
+    "PETRONET","ALKEM","MPHASIS","BHEL","MOTHERSON","GUJGASLTD","ATUL","COFORGE",
+    "AUBANK","SIEMENS","INDIAMART","GLENMARK","MUTHOOTFIN","GRANULES","SYNGENE","COROMANDEL",
+    "VOLTAS","IRFC","EXIDEIND","PERSISTENT","ESCORTS","OBEROIRLTY","ADANITRANS","ABBOTINDIA",
+    "NAVINFLUOR","LTIM","ZYDUSLIFE","HONAUT","DELHIVERY","IDFC","INDUSTOWER","POLICYBZR",
+    "LALPATHLAB","TATACOMM","HAL","KPITTECH","BALRAMCHIN","HDFCAMC","DIXON","3MINDIA",
+    "PNCINFRA","RAJESHEXPO","CROMPTON","GMRINFRA","TATAMTRDVR","BATAINDIA","CANFINHOME",
+    "BERGEPAINT","TORNTPOWER","SUNTV","JUBLFOOD","FEDERALBNK","IRB","ASTRAL","SRTRANSFIN",
+    "ABFRL","PEL","IDBI","NHPC","TATAELXSI","LICHSGFIN","DEEPAKNTR","DALBHARAT","CGPOWER",
+    "UNIONBANK","HINDCOPPER","LTTS","LAURUSLABS","SAIL","RVNL","BANKINDIA","BALKRISIND",
+    "ONGC","IOB","CUB","TATATECH","NBCC","NMDC","METROPOLIS","NAM-INDIA","RBLBANK",
+    "HUDCO","IRCON","FINCABLES","BSOFT"
+]
+
+# ---- Helper Function ----
+def fetch_option_data(symbol):
     try:
-        s = requests.Session()
-        s.get("https://www.nseindia.com", headers=HEADERS, timeout=5)
-        r = s.get(url, headers=HEADERS, timeout=10)
-        return r.json()
-    except:
-        return None
+        data = nse_optionchain_scrapper(symbol)
+        df = pd.DataFrame(data["records"]["data"])
+        ce = df[df["CE"].notna()]["CE"][["strikePrice", "lastPrice", "openInterest", "totalTradedVolume"]]
+        pe = df[df["PE"].notna()]["PE"][["strikePrice", "lastPrice", "openInterest", "totalTradedVolume"]]
+        ce["type"] = "CE"
+        pe["type"] = "PE"
+        df_all = pd.concat([ce, pe])
+        df_all["symbol"] = symbol
+        return df_all
+    except Exception:
+        return pd.DataFrame()
 
-# ---------------- Main F&O Scanner ----------------
-def process_symbol(sym):
-    data = fetch_option_chain(sym)
-    if not data or "records" not in data: return []
-    rec = data["records"]
-    underlying = rec.get("underlyingValue", None)
-    rows = rec.get("data", [])
-    if not underlying or not rows: return []
+# ==============================================
+# 🟢 SECTION 1: LIVE OPTION SCANNER
+# ==============================================
+st.subheader("📈 Live Option Scanner (Manual Symbol)")
 
-    flat=[]
-    for r in rows:
-        sp = r.get("strikePrice")
-        for t in ["CE","PE"]:
-            if t in r:
-                d = r[t]
-                flat.append({
-                    "Strike": sp,
-                    "Type": t,
-                    "LTP": d.get("lastPrice",0),
-                    "Change": d.get("change",0),
-                    "Volume": d.get("totalTradedVolume",0),
-                    "OI": d.get("openInterest",0),
-                    "OIChg": d.get("changeinOpenInterest",0)
-                })
-    df = pd.DataFrame(flat)
-    if df.empty: return []
+symbol = st.selectbox("Select F&O Stock", sorted(fo_stocks))
+if st.button("🔍 Fetch Live Data"):
+    df = fetch_option_data(symbol)
+    if not df.empty:
+        df["%Change"] = df["lastPrice"].pct_change() * 100
+        df["Time"] = datetime.datetime.now().strftime("%H:%M:%S")
+        st.dataframe(df[["Time","symbol","type","strikePrice","lastPrice","openInterest","totalTradedVolume"]])
+        st.success("✅ Live Option Data Fetched!")
+    else:
+        st.warning("⚠️ Unable to fetch data. Try again later.")
 
-    step = 50
-    strikes = sorted(df["Strike"].unique())
-    if len(strikes)>1:
-        diffs = np.diff(strikes)
-        try: step=int(pd.Series(diffs).mode().iloc[0])
-        except: step=50
+# ==============================================
+# 🟠 SECTION 2: TOP 15 PREMIUM GAINERS
+# ==============================================
+st.subheader("🚀 Top 15 Premium Gainers (9:15 → Now)")
 
-    atm = nearest_strike(underlying, step)
-    target=[atm, max(0, atm-step)]
-    med_vol = df["Volume"].replace(0,np.nan).median() or 1
+# ---- 9:15 Baseline Capture ----
+if st.button("📸 Capture 9:15 Baseline Snapshot"):
+    for sym in fo_stocks:
+        df = fetch_option_data(sym)
+        if not df.empty:
+            st.session_state.baseline_data[sym] = df
+    st.success("✅ 9:15 Baseline Captured Successfully!")
 
-    candidates=[]
-    now=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    for ts in target:
-        part = df[df["Strike"]==ts]
-        for _,r in part.iterrows():
-            ltp=float(r["LTP"]) if not pd.isna(r["LTP"]) else 0.0
-            change=float(r["Change"]) if not pd.isna(r["Change"]) else 0.0
-            vol=float(r["Volume"]) if not pd.isna(r["Volume"]) else 0.0
-            oi=int(r["OI"]) if not pd.isna(r["OI"]) else 0
-            oi_chg=float(r["OIChg"]) if not pd.isna(r["OIChg"]) else 0.0
+# ---- Live Market Scan ----
+if st.button("🔥 Run Full Market Scan"):
+    all_results = []
+    for sym in fo_stocks:
+        live_df = fetch_option_data(sym)
+        base_df = st.session_state.baseline_data.get(sym, pd.DataFrame())
+        if not live_df.empty and not base_df.empty:
+            merged = pd.merge(
+                live_df, base_df, on=["strikePrice", "type"], suffixes=("_now", "_915")
+            )
+            merged["%Gain"] = (
+                (merged["lastPrice_now"] - merged["lastPrice_915"]) / merged["lastPrice_915"]
+            ) * 100
+            merged["symbol"] = sym
+            merged["timestamp"] = datetime.datetime.now().strftime("%H:%M:%S")
+            all_results.append(merged)
+        time.sleep(0.5)
 
-            prem = compute_premium_pct(ltp,change)
-            v_ratio = safe_div(vol,med_vol)
-            oi_pct = safe_div(oi_chg,max(1,oi))*100
-            score = v_ratio*(1+prem/100)
+    if all_results:
+        final = pd.concat(all_results)
+        final = final.sort_values(by="%Gain", ascending=False).head(15)
+        st.dataframe(final[["timestamp","symbol","type","strikePrice","%Gain"]])
+        st.success("✅ Top 15 Premium Gainers Displayed!")
+    else:
+        st.warning("⚠️ Capture 9:15 snapshot first!")
 
-            if v_ratio>=vol_multiplier:
-                candidates.append({
-                    "Symbol": sym,
-                    "Expiry": expiry_text or "",
-                    "Strike": ts,
-                    "Type": r["Type"],
-                    "LTP": round(ltp,2),
-                    "Premium%": round(prem,2),
-                    "Vol": int(vol),
-                    "VolRatio": round(v_ratio,3),
-                    "OI": oi,
-                    "OIChg": oi_chg,
-                    "OI%": round(oi_pct,3),
-                    "Score": round(score,3),
-                    "Time": now
-                })
-    return candidates
-
-# ---------------- Run Scanner ----------------
-st.info(f"Auto-refreshing every {refresh_min} minutes...")
-
-placeholder=st.empty()
-while True:
-    with placeholder.container():
-        fo_symbols = get_fo_symbols()
-        results=[]
-        prog=st.progress(0)
-        total=min(len(fo_symbols), int(scan_limit))
-        for i,sym in enumerate(fo_symbols[:total]):
-            with st.spinner(f"Scanning {sym} ({i+1}/{total})"):
-                try: res=process_symbol(sym)
-                except: res=[]
-                if res: results.extend(res)
-            prog.progress(int((i+1)/total*100))
-            time.sleep(delay)
-        
-        if not results:
-            st.warning("No spikes found.")
-        else:
-            df=pd.DataFrame(results).sort_values(by="Score",ascending=False).reset_index(drop=True)
-            top=df.head(int(top_n))
-            st.subheader(f"Top {len(top)} Option Spikes (ATM & -1 ITM)")
-            st.dataframe(top,use_container_width=True)
-            csv=top.to_csv(index=False).encode()
-            st.download_button("📥 Download CSV",csv,"fo_option_scanner.csv","text/csv")
-
-        # ---------------- Today's Top Gainers ----------------
-        st.subheader("🔥 Today's Top Gainers (9:15 AM → Current Time)")
-        results_top=[]
-        for sym in fo_symbols[:total]:
-            try:
-                data = fetch_option_chain(sym)
-                if not data or "records" not in data:
-                    continue
-                rec = data["records"]
-                underlying = rec.get("underlyingValue", None)
-                rows = rec.get("data", [])
-                if not underlying or not rows:
-                    continue
-
-                atm = nearest_strike(underlying, step=50)
-                target_strikes = [atm, max(0, atm-50)]
-                med_vol = []
-                for r in rows:
-                    for t in ["CE","PE"]:
-                        if t in r:
-                            med_vol.append(r[t].get("totalTradedVolume",0))
-                median_volume = np.median([v for v in med_vol if v>0]) or 1
-
-                now=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                for r in rows:
-                    sp=r.get("strikePrice")
-                    if sp not in target_strikes: continue
-                    for t in ["CE","PE"]:
-                        if t in r:
-                            d=r[t]
-                            ltp=float(d.get("lastPrice",0))
-                            change=float(d.get("change",0))
-                            vol=float(d.get("totalTradedVolume",0))
-                            prem = compute_premium_pct(ltp, change)
-                            v_ratio = safe_div(vol, median_volume)
-                            score = v_ratio*(1+prem/100)
-                            if v_ratio>=vol_multiplier:
-                                results_top.append({
-                                    "Symbol": sym,
-                                    "Strike": sp,
-                                    "Type": t,
-                                    "LTP": round(ltp,2),
-                                    "Premium%": round(prem,2),
-                                    "Vol": int(vol),
-                                    "VolRatio": round(v_ratio,3),
-                                    "Score": round(score,3),
-                                    "Time": now
-                                })
-            except:
-                continue
-        
-        if not results_top:
-            st.warning("No top gainers found in interval.")
-        else:
-            df_top=pd.DataFrame(results_top)
-            df_top=df_top.sort_values(by="Score",ascending=False).head(15).reset_index(drop=True)
-            st.dataframe(df_top,use_container_width=True)
-            csv_top=df_top.to_csv(index=False).encode()
-            st.download_button("📥 Download CSV (Top 15 Gainers)",csv_top,"top_gainers.csv","text/csv")
-
-    time.sleep(refresh_min*60)
+st.info("💡 Tip: Capture baseline at 9:15 AM once, then re-run market scan anytime.")
