@@ -1,5 +1,5 @@
 # app.py
-# Full F&O ATM/-1 ITM Option Scanner — Streamlit (auto-refresh every 15 min)
+# F&O Option Scanner + Today's Top Gainers
 # Requirements: streamlit, pandas, numpy, requests
 
 import streamlit as st
@@ -10,8 +10,7 @@ import time
 from datetime import datetime
 
 st.set_page_config(page_title="Live F&O Option Scanner", layout="wide", page_icon="💹")
-st.title("⚡ Live F&O ATM & -1 ITM Option Scanner")
-st.caption("Scans 200+ NSE F&O stocks for ATM & -1 ITM strikes, highlights volume & premium spikes. Auto-refresh every 15 min.")
+st.title("⚡ Live F&O Option Scanner + Today's Top Gainers")
 
 # ---------------- Sidebar ----------------
 with st.sidebar:
@@ -20,7 +19,7 @@ with st.sidebar:
     vol_multiplier = st.number_input("Volume Spike Multiplier", 1.0, 20.0, 2.0, 0.1)
     scan_limit = st.number_input("Number of F&O stocks to scan (max 250)", 5, 250, 50, 5)
     delay = st.number_input("Delay between requests (sec)", 0.2, 5.0, 1.0, 0.1)
-    top_n = st.number_input("Show Top N Results", 5, 200, 50, 1)
+    top_n = st.number_input("Show Top N Results (Main Scanner)", 5, 200, 50, 1)
     refresh_min = st.number_input("Auto Refresh Interval (minutes)", 1, 60, 15, 1)
     st.markdown("---")
     st.caption("💡 Recommendation: Use scan_limit 20-50 and delay 1s for first run.")
@@ -53,22 +52,17 @@ def get_fo_symbols():
     return sorted(list(set(fo_list)))
 
 # ---------------- Utilities ----------------
+HEADERS = {"User-Agent": "Mozilla/5.0"}
 def nearest_strike(price, step=50):
     try: return int(round(price / step) * step)
     except: return None
-
 def safe_div(a,b):
     try: return a/b if b !=0 else 0
     except: return 0
-
 def compute_premium_pct(ltp, change):
     prev = ltp - change
     if prev and prev != 0: return (change/prev)*100
     return 0
-
-# ---------------- Fetch NSE Option Chain ----------------
-HEADERS = {"User-Agent": "Mozilla/5.0"}
-
 def fetch_option_chain(symbol):
     url = f"https://www.nseindia.com/api/option-chain-equities?symbol={symbol}"
     try:
@@ -79,7 +73,8 @@ def fetch_option_chain(symbol):
     except:
         return None
 
-def process_symbol(sym, vol_multiplier):
+# ---------------- Main F&O Scanner ----------------
+def process_symbol(sym):
     data = fetch_option_chain(sym)
     if not data or "records" not in data: return []
     rec = data["records"]
@@ -100,14 +95,14 @@ def process_symbol(sym, vol_multiplier):
                     "Change": d.get("change",0),
                     "Volume": d.get("totalTradedVolume",0),
                     "OI": d.get("openInterest",0),
-                    "OI Change": d.get("changeinOpenInterest",0)
+                    "OIChg": d.get("changeinOpenInterest",0)
                 })
     df = pd.DataFrame(flat)
     if df.empty: return []
 
-    strikes = sorted(df["Strike"].unique())
     step = 50
-    if len(strikes) > 1:
+    strikes = sorted(df["Strike"].unique())
+    if len(strikes)>1:
         diffs = np.diff(strikes)
         try: step=int(pd.Series(diffs).mode().iloc[0])
         except: step=50
@@ -125,7 +120,7 @@ def process_symbol(sym, vol_multiplier):
             change=float(r["Change"]) if not pd.isna(r["Change"]) else 0.0
             vol=float(r["Volume"]) if not pd.isna(r["Volume"]) else 0.0
             oi=int(r["OI"]) if not pd.isna(r["OI"]) else 0
-            oi_chg=float(r["OI Change"]) if not pd.isna(r["OI Change"]) else 0.0
+            oi_chg=float(r["OIChg"]) if not pd.isna(r["OIChg"]) else 0.0
 
             prem = compute_premium_pct(ltp,change)
             v_ratio = safe_div(vol,med_vol)
@@ -150,34 +145,92 @@ def process_symbol(sym, vol_multiplier):
                 })
     return candidates
 
-# ---------------- Auto-refresh & Run Scan ----------------
-def run_scan():
-    fo_symbols = get_fo_symbols()
-    results=[]
-    prog=st.progress(0)
-    total=min(len(fo_symbols), int(scan_limit))
-    for i,sym in enumerate(fo_symbols[:total]):
-        with st.spinner(f"→ Scanning {sym} ({i+1}/{total})"):
-            try: res=process_symbol(sym,vol_multiplier)
-            except: res=[]
-            if res: results.extend(res)
-        prog.progress(int((i+1)/total*100))
-        time.sleep(delay)
-    return results
-
+# ---------------- Run Scanner ----------------
 st.info(f"Auto-refreshing every {refresh_min} minutes...")
 
 placeholder=st.empty()
 while True:
     with placeholder.container():
-        results=run_scan()
+        fo_symbols = get_fo_symbols()
+        results=[]
+        prog=st.progress(0)
+        total=min(len(fo_symbols), int(scan_limit))
+        for i,sym in enumerate(fo_symbols[:total]):
+            with st.spinner(f"Scanning {sym} ({i+1}/{total})"):
+                try: res=process_symbol(sym)
+                except: res=[]
+                if res: results.extend(res)
+            prog.progress(int((i+1)/total*100))
+            time.sleep(delay)
+        
         if not results:
-            st.warning("No spikes found — try lowering Volume multiplier or increase scan_limit.")
+            st.warning("No spikes found.")
         else:
             df=pd.DataFrame(results).sort_values(by="Score",ascending=False).reset_index(drop=True)
             top=df.head(int(top_n))
             st.subheader(f"Top {len(top)} Option Spikes (ATM & -1 ITM)")
             st.dataframe(top,use_container_width=True)
             csv=top.to_csv(index=False).encode()
-            st.download_button("📥 Download CSV",csv,"fo_option_scanner.csv",mime="text/csv")
+            st.download_button("📥 Download CSV",csv,"fo_option_scanner.csv","text/csv")
+
+        # ---------------- Today's Top Gainers ----------------
+        st.subheader("🔥 Today's Top Gainers (9:15 AM → Current Time)")
+        results_top=[]
+        for sym in fo_symbols[:total]:
+            try:
+                data = fetch_option_chain(sym)
+                if not data or "records" not in data:
+                    continue
+                rec = data["records"]
+                underlying = rec.get("underlyingValue", None)
+                rows = rec.get("data", [])
+                if not underlying or not rows:
+                    continue
+
+                atm = nearest_strike(underlying, step=50)
+                target_strikes = [atm, max(0, atm-50)]
+                med_vol = []
+                for r in rows:
+                    for t in ["CE","PE"]:
+                        if t in r:
+                            med_vol.append(r[t].get("totalTradedVolume",0))
+                median_volume = np.median([v for v in med_vol if v>0]) or 1
+
+                now=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                for r in rows:
+                    sp=r.get("strikePrice")
+                    if sp not in target_strikes: continue
+                    for t in ["CE","PE"]:
+                        if t in r:
+                            d=r[t]
+                            ltp=float(d.get("lastPrice",0))
+                            change=float(d.get("change",0))
+                            vol=float(d.get("totalTradedVolume",0))
+                            prem = compute_premium_pct(ltp, change)
+                            v_ratio = safe_div(vol, median_volume)
+                            score = v_ratio*(1+prem/100)
+                            if v_ratio>=vol_multiplier:
+                                results_top.append({
+                                    "Symbol": sym,
+                                    "Strike": sp,
+                                    "Type": t,
+                                    "LTP": round(ltp,2),
+                                    "Premium%": round(prem,2),
+                                    "Vol": int(vol),
+                                    "VolRatio": round(v_ratio,3),
+                                    "Score": round(score,3),
+                                    "Time": now
+                                })
+            except:
+                continue
+        
+        if not results_top:
+            st.warning("No top gainers found in interval.")
+        else:
+            df_top=pd.DataFrame(results_top)
+            df_top=df_top.sort_values(by="Score",ascending=False).head(15).reset_index(drop=True)
+            st.dataframe(df_top,use_container_width=True)
+            csv_top=df_top.to_csv(index=False).encode()
+            st.download_button("📥 Download CSV (Top 15 Gainers)",csv_top,"top_gainers.csv","text/csv")
+
     time.sleep(refresh_min*60)
