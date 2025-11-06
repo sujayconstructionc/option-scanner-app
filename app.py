@@ -1,108 +1,79 @@
 import streamlit as st
 import pandas as pd
-import requests
-import json
-import time
-from datetime import datetime
+import datetime as dt
+from nsepython import nse_optionchain_scrape
 
-st.set_page_config(page_title="⚡ NSE Live F&O Option Scanner", layout="wide")
+st.set_page_config(page_title="⚡ Live F&O Multi-Strike Option Scanner", layout="wide")
 
-st.title("⚡ NSE Live F&O Option Scanner — Volume Spike + Top Premium Gainers")
-st.caption("Scan all 200+ F&O stocks (ATM + -1 ITM) using live NSE data")
+st.title("⚡ Live F&O Option Scanner — All Strike Prices + Volume Spike + Top Premium Gainers")
+st.caption("Scans all strike prices (ATM ±4) for each F&O stock in real time using NSE data.")
 
-# --- SETTINGS ---
-col1, col2, col3, col4 = st.columns(4)
-symbol = col1.selectbox("Select Stock", ["RELIANCE", "SBIN", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "TATASTEEL",
-                                         "AXISBANK", "KOTAKBANK", "ITC", "LT", "MARUTI", "HEROMOTOCO", "ULTRACEMCO",
-                                         "INDUSINDBK", "BAJFINANCE", "BAJAJFINSV", "DIVISLAB", "NESTLEIND", "SUNPHARMA",
-                                         "TATAMOTORS", "HCLTECH", "WIPRO", "TECHM", "POWERGRID", "TITAN", "ONGC",
-                                         "COALINDIA", "BHARTIARTL", "NTPC", "SBICARD", "APOLLOHOSP", "HDFCLIFE",
-                                         "DRREDDY", "TATACONSUM", "M&M", "BPCL", "ADANIENT", "ADANIPORTS", "CIPLA",
-                                         "EICHERMOT", "GRASIM", "BAJAJ-AUTO", "BRITANNIA", "SHREECEM", "UPL",
-                                         "TRENT", "JSWSTEEL", "DLF", "TATACHEM", "ICICIPRULI", "PIDILITIND", "CHOLAFIN",
-                                         "PNB", "BHEL", "CANBK", "HINDUNILVR", "RECLTD", "IRCTC", "ZEEL", "TVSMOTOR",
-                                         "HINDALCO", "DEEPAKNTR", "ABB", "INDHOTEL", "TATAELXSI", "AMBUJACEM",
-                                         "AARTIIND", "KAYNES", "POLYCAB", "SBILIFE", "IDFCFIRSTB", "OIL", "IDEA",
-                                         "JINDALSTEL", "BANKBARODA", "PFC", "HAVELLS", "GODREJCP", "COLPAL", "UBL",
-                                         "DABUR", "MCDOWELL-N", "ICICIGI", "IRFC", "MANAPPURAM", "LTIM", "MFSL",
-                                         "ALKEM", "BOSCHLTD", "INDIGO", "CONCOR", "BEL", "SRF", "HAL", "NAVINFLUOR",
-                                         "TORNTPHARM", "ZYDUSLIFE", "GAIL", "ABBOTINDIA", "SBINN", "NATIONALUM", "IOB"],
-                        index=0)
+# --- F&O Stock List ---
+fo_stocks = [
+    "RELIANCE", "HDFCBANK", "ICICIBANK", "INFY", "TCS", "SBIN", "AXISBANK", "LT", "HINDUNILVR",
+    "ITC", "BAJFINANCE", "BHARTIARTL", "KOTAKBANK", "SUNPHARMA", "HCLTECH", "MARUTI", "NESTLEIND",
+    "ULTRACEMCO", "ONGC", "POWERGRID", "COALINDIA", "TATAMOTORS", "NTPC", "WIPRO", "JSWSTEEL",
+    "GRASIM", "ADANIENT", "ADANIPORTS", "TITAN", "M&M", "TECHM", "TATASTEEL", "BAJAJFINSV",
+    "BPCL", "CIPLA", "DIVISLAB", "EICHERMOT", "BRITANNIA", "DRREDDY", "HEROMOTOCO", "HDFCLIFE",
+    "SBILIFE", "UPL", "ICICIPRULI", "INDUSINDBK", "APOLLOHOSP", "HINDALCO", "TATACONSUM",
+    "TORNTPHARM", "AMBUJACEM", "PIDILITIND", "BAJAJ-AUTO", "SHREECEM", "SIEMENS", "DMART",
+    "ADANIGREEN", "DABUR", "ZOMATO", "RECLTD", "IRCTC", "PNB", "CANBK", "BANKBARODA", "TVSMOTOR",
+    "INDIGO", "CHOLAFIN", "BANDHANBNK", "GAIL", "MUTHOOTFIN", "IOC", "BEL", "CONCOR", "AARTIIND",
+    "ABFRL", "ACC", "ALOKINDS", "BALRAMCHIN", "BHEL", "CUMMINSIND", "EXIDEIND", "FEDERALBNK",
+    "GNFC", "IDFCFIRSTB", "IDEA", "INDHOTEL", "JINDALSTEL", "KAYNES", "LAURUSLABS", "MANAPPURAM",
+    "MFSL", "NAUKRI", "OBEROIRLTY", "PEL", "POLYCAB", "RBLBANK", "SRF", "SUNTV", "TRENT",
+    "VEDL", "VOLTAS", "ZEEL"
+]
 
-expiry = col2.text_input("Expiry (e.g. 28NOV2024)", "28NOV2024")
-refresh = col3.slider("Auto Refresh (seconds)", 10, 120, 30)
-mode = col4.selectbox("Mode", ["Volume Spike", "Top Premium Gainers"])
+# --- User Inputs ---
+selected_stock = st.selectbox("Select F&O Stock", fo_stocks)
+expiry_choice = st.text_input("Enter expiry date (dd-mmm-yyyy)", value="")
+scan_button = st.button("🔍 Scan Live Options")
 
-# --- CE/PE Filter ---
-ce_filter = st.sidebar.checkbox("Show Calls (CE)", True)
-pe_filter = st.sidebar.checkbox("Show Puts (PE)", True)
-combined = st.sidebar.checkbox("Show Combined (Both)", True)
-
-# --- FETCH NSE OPTIONCHAIN FUNCTION ---
-def fetch_nse_option_chain(symbol):
-    url = f"https://www.nseindia.com/api/option-chain-equities?symbol={symbol}"
-    headers = {
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "accept-language": "en,IN;q=0.9",
-        "referer": "https://www.nseindia.com/option-chain"
-    }
-    session = requests.Session()
+# --- Helper Function ---
+def get_option_data(symbol):
     try:
-        session.get("https://www.nseindia.com", headers=headers, timeout=5)
-        response = session.get(url, headers=headers, timeout=10)
-        if response.status_code == 200:
-            data = json.loads(response.text)
-            records = data.get("records", {}).get("data", [])
-            ce_rows, pe_rows = [], []
-            for item in records:
-                if "CE" in item:
-                    ce = item["CE"]
-                    ce["type"] = "CE"
-                    ce_rows.append(ce)
-                if "PE" in item:
-                    pe = item["PE"]
-                    pe["type"] = "PE"
-                    pe_rows.append(pe)
-            df = pd.DataFrame(ce_rows + pe_rows)
-            if not df.empty:
-                df["symbol"] = symbol
-            return df
-        else:
-            st.warning(f"⚠️ NSE Blocked {symbol}: {response.status_code}")
-            return pd.DataFrame()
+        oc = nse_optionchain_scrape("NSE", symbol)
+        ce_data = pd.DataFrame(oc['records']['data'])
+        if len(ce_data) == 0:
+            return None
+        rows = []
+        for d in oc['records']['data']:
+            strike = d['strikePrice']
+            ce = d.get('CE')
+            pe = d.get('PE')
+            if ce:
+                rows.append([
+                    symbol, d['expiryDate'], strike, "CE", ce.get('lastPrice', 0),
+                    ce.get('change', 0), ce.get('totalTradedVolume', 0),
+                    ce.get('openInterest', 0)
+                ])
+            if pe:
+                rows.append([
+                    symbol, d['expiryDate'], strike, "PE", pe.get('lastPrice', 0),
+                    pe.get('change', 0), pe.get('totalTradedVolume', 0),
+                    pe.get('openInterest', 0)
+                ])
+        df = pd.DataFrame(rows, columns=[
+            "Symbol", "Expiry", "Strike", "Type", "LTP", "Change", "Volume", "OI"
+        ])
+        return df
     except Exception as e:
         st.warning(f"⚠️ Error fetching {symbol}: {e}")
-        return pd.DataFrame()
+        return None
 
-# --- PROCESS DATA ---
-def process_data(df):
-    if df.empty:
-        return df
-    df = df[["symbol", "strikePrice", "expiryDate", "type", "lastPrice", "change", "totalTradedVolume", "openInterest"]]
-    df = df.sort_values(by="change", ascending=False)
-    df["timestamp"] = datetime.now().strftime("%H:%M:%S")
-    return df
-
-# --- MAIN SCANNER ---
-st.markdown("### 🔄 Scanning Live NSE Data...")
-placeholder = st.empty()
-
-while True:
-    data = fetch_nse_option_chain(symbol)
-    if not data.empty:
-        processed = process_data(data)
-
-        # Apply CE/PE filters
-        if not combined:
-            if ce_filter and not pe_filter:
-                processed = processed[processed["type"] == "CE"]
-            elif pe_filter and not ce_filter:
-                processed = processed[processed["type"] == "PE"]
-
-        # Show Top 15 gainers
-        top = processed.head(15)
-        placeholder.dataframe(top, use_container_width=True)
-    else:
-        placeholder.warning("⚠️ No data fetched. Try again during market hours (9:15 AM–3:30 PM IST).")
-
-    time.sleep(refresh)
+# --- Main Logic ---
+if scan_button:
+    with st.spinner(f"Fetching live option-chain data for {selected_stock}..."):
+        df = get_option_data(selected_stock)
+        if df is None or df.empty:
+            st.error("⚠️ No data fetched. Try again during market hours (9:15 AM–3:30 PM IST).")
+        else:
+            if expiry_choice:
+                df = df[df['Expiry'].str.contains(expiry_choice, case=False, na=False)]
+            # Volume spike logic: top 10 by volume
+            df_sorted = df.sort_values(by="Volume", ascending=False).head(10)
+            st.success("✅ Live Data Fetched!")
+            st.dataframe(df_sorted)
+            csv = df_sorted.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Download CSV", csv, f"{selected_stock}_option_scan.csv", "text/csv")
