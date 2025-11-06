@@ -1,110 +1,214 @@
-# app.py
-# ⚡ Live F&O Option Scanner — Proxy-based (Cloud Safe)
-# by Gunvant007 & GPT-5
+# app.py — Live F&O Option Scanner (Proxy-free, Cloud-safe, NSE direct fetch)
+# Streamlit cloud compatible version (Volume Spike + Top Premium Gainers)
+# Author: Gunvant007 Scanner System
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 import requests
-import json
 import time
 from datetime import datetime
 
-# ------------------ UI Setup ------------------
-st.set_page_config(page_title="⚡ F&O Option Scanner", layout="wide")
-st.title("⚡ Live F&O Option Scanner — Cloud Proxy Version")
-st.caption("Fetches NSE Option Chain live using proxy-safe API (for Streamlit Cloud)")
+st.set_page_config(page_title="Live F&O Option Scanner", layout="wide")
+st.title("⚡ Live F&O Option Scanner — Volume Spike + Top Premium Gainers")
+st.caption("Live NSE option-chain data (direct fetch, proxy-free). Use reasonable delays to avoid rate limits.")
 
-# Sidebar Controls
-st.sidebar.header("🧭 Filters")
-ce_filter = st.sidebar.checkbox("Call (CE)", value=True)
-pe_filter = st.sidebar.checkbox("Put (PE)", value=True)
-combined = st.sidebar.checkbox("Combined (Both CE & PE)", value=False)
-expiry_filter = st.sidebar.text_input("Expiry (e.g. 14NOV2024)", "")
+# ---------------- Sidebar ----------------
+with st.sidebar:
+    st.header("⚙️ Scanner Settings")
+    scan_limit = st.number_input("Scan limit", min_value=10, max_value=250, value=250, step=10)
+    per_call_delay = st.number_input("Delay between requests (sec)", min_value=0.2, max_value=3.0, value=1.0, step=0.2)
+    vol_multiplier = st.number_input("Volume spike multiplier", min_value=1.0, max_value=20.0, value=3.0, step=0.5)
+    top_n_main = st.number_input("Top N (Volume Spike)", min_value=5, max_value=100, value=50)
+    top_n_gainers = st.number_input("Top N (Premium Gainers)", min_value=5, max_value=50, value=15)
+    st.markdown("---")
 
-delay = st.sidebar.slider("Delay between API calls (sec)", 0.5, 3.0, 1.0)
-limit = st.sidebar.number_input("Top N Results", min_value=10, max_value=200, value=50, step=10)
+# ---------------- F&O Symbol List ----------------
+def get_fo_list():
+    return sorted(list(set([
+        "ABB","ACC","ADANIENT","ADANIPORTS","ALKEM","AMBUJACEM","APOLLOHOSP","APOLLOTYRE","ASHOKLEY",
+        "ASIANPAINT","AUBANK","AUROPHARMA","AXISBANK","BAJAJ-AUTO","BAJAJFINSV","BAJFINANCE","BALKRISIND",
+        "BANDHANBNK","BANKBARODA","BEL","BERGEPAINT","BHARATFORG","BHARTIARTL","BHEL","BIOCON","BOSCHLTD",
+        "BPCL","BRITANNIA","CANBK","CANFINHOME","CHAMBLFERT","CHOLAFIN","CIPLA","COALINDIA","COFORGE","COLPAL",
+        "CONCOR","COROMANDEL","CROMPTON","CUB","CUMMINSIND","DABUR","DALBHARAT","DEEPAKNTR","DIVISLAB","DIXON",
+        "DLF","DRREDDY","EICHERMOT","ESCORTS","EXIDEIND","FEDERALBNK","GAIL","GLENMARK","GMRINFRA","GNFC",
+        "GODREJCP","GRASIM","GUJGASLTD","HAL","HAVELLS","HCLTECH","HDFCBANK","HDFCLIFE","HEROMOTOCO",
+        "HINDALCO","HINDCOPPER","HINDUNILVR","ICICIBANK","ICICIGI","ICICIPRULI","IDFC","IDFCFIRSTB","IGL",
+        "INDIGO","INDUSINDBK","INFY","IOC","ITC","JINDALSTEL","JSWSTEEL","JUBLFOOD","KOTAKBANK","LT","LTIM",
+        "LUPIN","M&M","MARUTI","MCDOWELL-N","MCX","MUTHOOTFIN","NESTLEIND","NMDC","NTPC","ONGC","PAGEIND",
+        "PEL","PETRONET","PFC","PNB","POWERGRID","RECLTD","RELIANCE","SAIL","SBIN","SBILIFE","SUNPHARMA",
+        "TATASTEEL","TATACONSUM","TATACHEM","TATAPOWER","TATAMOTORS","TCS","TECHM","TITAN","TRENT","UPL",
+        "ULTRACEMCO","VOLTAS","WIPRO","ZEEL","ZYDUSLIFE","AARTIIND","KAYNES","POLYCAB","TORNTPOWER",
+        "TVSMOTOR","VEDL","YESBANK","ZOMATO"
+    ])))
 
-st.sidebar.markdown("---")
-st.sidebar.caption("☁️ Cloud-safe version using Proxy (auto handles cookies & rate limits)")
+FO_SYMBOLS = get_fo_list()
 
-# ------------------ F&O Stock List ------------------
-symbols = [
-    "RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK","LT","SBIN","AXISBANK","KOTAKBANK","HCLTECH","ITC",
-    "HINDUNILVR","TITAN","MARUTI","SUNPHARMA","BAJFINANCE","NESTLEIND","ONGC","COALINDIA","TATAMOTORS",
-    "WIPRO","ULTRACEMCO","TATACONSUM","GRASIM","BAJAJFINSV","NTPC","POWERGRID","ADANIPORTS","BHARTIARTL",
-    "TECHM","DRREDDY","BRITANNIA","CIPLA","HEROMOTOCO","DIVISLAB","EICHERMOT","TATASTEEL","HINDALCO",
-    "JSWSTEEL","UPL","INDUSINDBK","ADANIENT","BPCL","IOC","SHREECEM","HDFCLIFE","SBILIFE","ICICIPRULI",
-    "M&M","BAJAJ-AUTO","PNB","DLF","CHOLAFIN","AMBUJACEM","PIDILITIND","AUROPHARMA","TATAPOWER",
-    "BEL","BANDHANBNK","BIOCON","BOSCHLTD","INDIGO","CANBK","GAIL","HAVELLS","ICICIGI","LUPIN",
-    "MCDOWELL-N","MFSL","MUTHOOTFIN","NMDC","PAGEIND","SAIL","SRF","TRENT","TORNTPHARM","TVSMOTOR",
-    "VEDL","ZEEL","COFORGE","ABFRL","APOLLOTYRE","ASHOKLEY","BALRAMCHIN","BANKBARODA","BHEL",
-    "CONCOR","CUMMINSIND","ESCORTS","GLENMARK","GNFC","GODREJCP","HINDPETRO","IDFCFIRSTB","JINDALSTEL",
-    "LICHSGFIN","MRF","NAVINFLUOR","OBEROIRLTY","PIIND","RECLTD","UBL","INDHOTEL","KANSAINER","POLYCAB","OFSS"
-]
+# ---------------- NSE Direct Fetch ----------------
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Connection": "keep-alive",
+}
 
-# ------------------ Proxy-based NSE Fetch ------------------
 def fetch_option_chain(symbol):
-    proxy_url = f"https://api.allorigins.win/get?url=https://www.nseindia.com/api/option-chain-equities?symbol={symbol}"
     try:
-        res = requests.get(proxy_url, timeout=10)
-        if res.status_code == 200:
-            data_json = json.loads(res.text)
-            contents = json.loads(data_json["contents"])
-            return contents
+        s = requests.Session()
+        s.get("https://www.nseindia.com", headers=HEADERS, timeout=5)
+        url = f"https://www.nseindia.com/api/option-chain-equities?symbol={symbol}"
+        r = s.get(url, headers=HEADERS, timeout=10)
+        if r.status_code == 200:
+            return r.json()
         else:
-            st.warning(f"⚠️ Proxy fetch failed for {symbol}")
             return None
     except Exception as e:
-        st.warning(f"⚠️ Error fetching {symbol}: {e}")
         return None
 
-# ------------------ Process Symbol ------------------
-def process_symbol(symbol):
-    data = fetch_option_chain(symbol)
-    if not data or "records" not in data:
-        return pd.DataFrame()
-    all_data = data["records"]["data"]
-    rows = []
-    for d in all_data:
-        strike = d.get("strikePrice")
-        ce = d.get("CE")
-        pe = d.get("PE")
+def nearest_strike(price, step=50):
+    try:
+        return int(round(price / step) * step)
+    except:
+        return None
 
-        if ce and ce_filter:
-            rows.append({
-                "Symbol": symbol, "Type": "CE", "Strike": strike,
-                "LTP": ce.get("lastPrice"), "Volume": ce.get("totalTradedVolume"),
-                "OI": ce.get("openInterest"), "Change%": ce.get("change")
-            })
-        if pe and pe_filter:
-            rows.append({
-                "Symbol": symbol, "Type": "PE", "Strike": strike,
-                "LTP": pe.get("lastPrice"), "Volume": pe.get("totalTradedVolume"),
-                "OI": pe.get("openInterest"), "Change%": pe.get("change")
-            })
-    df = pd.DataFrame(rows)
-    if combined:
-        return df
-    return df[df["Type"].isin(["CE" if ce_filter else None, "PE" if pe_filter else None])]
+def compute_pct(curr, base):
+    try:
+        return ((curr - base) / base) * 100 if base else 0
+    except:
+        return 0
 
-# ------------------ Main ------------------
-if st.button("🚀 Start Live Scan"):
-    st.info("Scanning live NSE data (via proxy)... this may take 2–3 minutes for all symbols.")
-    all_results = pd.DataFrame()
-    for sym in symbols:
-        result = process_symbol(sym)
-        if not result.empty:
-            all_results = pd.concat([all_results, result], ignore_index=True)
-        time.sleep(delay)
+# ---------------- Baseline Handling ----------------
+if "baseline" not in st.session_state:
+    st.session_state.baseline = {}
+    st.session_state.baseline_time = None
 
-    if all_results.empty:
-        st.warning("⚠️ No live data received. Try again during 9:15–15:30 IST.")
+if st.sidebar.button("📸 Capture 9:15 Baseline"):
+    st.sidebar.info("Capturing baseline...")
+    captured = 0
+    for i, sym in enumerate(FO_SYMBOLS[:scan_limit]):
+        data = fetch_option_chain(sym)
+        if not data or "records" not in data:
+            continue
+        rec = data["records"]
+        underlying = rec.get("underlyingValue", None)
+        rows = rec.get("data", [])
+        if not rows: continue
+        strikes = sorted({r.get("strikePrice") for r in rows})
+        step = 50 if len(strikes) < 2 else int(np.median(np.diff(sorted(strikes))))
+        atm = nearest_strike(underlying, step)
+        targets = [atm, atm - step]
+        for r in rows:
+            if r.get("strikePrice") not in targets: continue
+            for t in ["CE", "PE"]:
+                if t in r and r[t]:
+                    st.session_state.baseline[(sym, r["strikePrice"], t)] = float(r[t].get("lastPrice", 0))
+                    captured += 1
+        time.sleep(per_call_delay)
+    st.session_state.baseline_time = datetime.now().strftime("%H:%M:%S")
+    st.sidebar.success(f"Baseline captured: {captured} rows")
+
+# ---------------- Layout ----------------
+col1, col2 = st.columns([2, 1])
+
+# ---------------- Volume Spike Scanner ----------------
+with col1:
+    st.header("🔹 Volume Spike Scanner")
+    if st.button("▶ Run Volume Spike Scan"):
+        results = []
+        total = min(len(FO_SYMBOLS), scan_limit)
+        prog = st.progress(0)
+        for i, sym in enumerate(FO_SYMBOLS[:total]):
+            data = fetch_option_chain(sym)
+            if not data or "records" not in data:
+                prog.progress(int((i + 1) / total * 100))
+                continue
+            rec = data["records"]
+            underlying = rec.get("underlyingValue", None)
+            rows = rec.get("data", [])
+            if not rows:
+                prog.progress(int((i + 1) / total * 100))
+                continue
+            strikes = sorted({r.get("strikePrice") for r in rows})
+            step = 50 if len(strikes) < 2 else int(np.median(np.diff(sorted(strikes))))
+            atm = nearest_strike(underlying, step)
+            targets = [atm, atm - step]
+            vols = []
+            for r in rows:
+                for t in ["CE", "PE"]:
+                    if t in r and r[t]:
+                        vols.append(r[t].get("totalTradedVolume", 0))
+            med_vol = np.median([v for v in vols if v > 0]) or 1
+            for r in rows:
+                if r.get("strikePrice") not in targets: continue
+                for t in ["CE", "PE"]:
+                    if t in r and r[t]:
+                        d = r[t]
+                        vol = d.get("totalTradedVolume", 0)
+                        if vol / med_vol >= vol_multiplier:
+                            results.append({
+                                "Symbol": sym,
+                                "Strike": r["strikePrice"],
+                                "Type": t,
+                                "LTP": d.get("lastPrice", 0),
+                                "Change": d.get("change", 0),
+                                "OI": d.get("openInterest", 0),
+                                "Vol": vol,
+                                "VolRatio": round(vol / med_vol, 2)
+                            })
+            prog.progress(int((i + 1) / total * 100))
+            time.sleep(per_call_delay)
+
+        if not results:
+            st.warning("No volume spikes found.")
+        else:
+            df = pd.DataFrame(results).sort_values(by="VolRatio", ascending=False)
+            st.dataframe(df.head(top_n_main), use_container_width=True)
+            st.download_button("📥 Download CSV", df.to_csv(index=False), "volume_spike.csv")
+
+# ---------------- Top Premium Gainers ----------------
+with col2:
+    st.header("🚀 Top Premium Gainers (vs 9:15 Baseline)")
+    if st.session_state.baseline:
+        st.success(f"Baseline rows: {len(st.session_state.baseline)} at {st.session_state.baseline_time}")
     else:
-        st.success("✅ Live Scan Complete")
-        top = all_results.sort_values(by="Change%", ascending=False).head(limit)
-        st.dataframe(top, use_container_width=True)
-        csv = top.to_csv(index=False).encode("utf-8")
-        st.download_button("📥 Download CSV", csv, "top_gainers.csv", "text/csv")
+        st.info("Capture baseline first.")
+    if st.button("▶ Run Premium Gainers"):
+        gainers = []
+        for i, sym in enumerate(FO_SYMBOLS[:scan_limit]):
+            data = fetch_option_chain(sym)
+            if not data or "records" not in data: continue
+            rec = data["records"]
+            underlying = rec.get("underlyingValue", None)
+            rows = rec.get("data", [])
+            if not rows: continue
+            strikes = sorted({r.get("strikePrice") for r in rows})
+            step = 50 if len(strikes) < 2 else int(np.median(np.diff(sorted(strikes))))
+            atm = nearest_strike(underlying, step)
+            targets = [atm, atm - step]
+            for r in rows:
+                if r.get("strikePrice") not in targets: continue
+                for t in ["CE", "PE"]:
+                    if t in r and r[t]:
+                        key = (sym, r["strikePrice"], t)
+                        base = st.session_state.baseline.get(key, None)
+                        if base:
+                            curr = float(r[t].get("lastPrice", 0))
+                            pct = compute_pct(curr, base)
+                            gainers.append({
+                                "Symbol": sym,
+                                "Strike": r["strikePrice"],
+                                "Type": t,
+                                "BaseLTP": base,
+                                "CurrLTP": curr,
+                                "%Gain": round(pct, 2)
+                            })
+            time.sleep(per_call_delay)
+        if not gainers:
+            st.warning("No gainers found.")
+        else:
+            df_g = pd.DataFrame(gainers).sort_values(by="%Gain", ascending=False)
+            st.dataframe(df_g.head(top_n_gainers), use_container_width=True)
+            st.download_button("📥 Download CSV", df_g.to_csv(index=False), "premium_gainers.csv")
 
-else:
-    st.info("Press the '🚀 Start Live Scan' button to begin scanning live data.")
+st.markdown("---")
+st.caption("✅ Runs live during 9:15–15:30 IST • F&O list complete • Proxy-free direct NSE fetch.")
