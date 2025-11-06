@@ -1,14 +1,18 @@
+# ⚡ Live F&O Multi-Strike Option Scanner — NSE Python Version
+# Author: Gunvant 007 | Updated: Nov 2025
+# Description: Scans all strike prices (ATM ± multiple) for all F&O stocks using live NSE data.
+
 import streamlit as st
 import pandas as pd
-import datetime as dt
 from nsepython import nse_optionchain_scrape
+import datetime as dt
 
-st.set_page_config(page_title="⚡ Live F&O Multi-Strike Option Scanner", layout="wide")
+# ------------------ Streamlit Config ------------------
+st.set_page_config(page_title="⚡ Live F&O Option Scanner", layout="wide")
+st.title("⚡ Live F&O Option Scanner — Multi-Strike + Volume Spike + Premium Gainers")
+st.caption("Scans all strike prices (ATM ± multiple levels) for each F&O stock in real time using NSE data.")
 
-st.title("⚡ Live F&O Option Scanner — All Strike Prices + Volume Spike + Top Premium Gainers")
-st.caption("Scans all strike prices (ATM ±4) for each F&O stock in real time using NSE data.")
-
-# --- F&O Stock List ---
+# ------------------ F&O Stock List ------------------
 fo_stocks = [
     "RELIANCE", "HDFCBANK", "ICICIBANK", "INFY", "TCS", "SBIN", "AXISBANK", "LT", "HINDUNILVR",
     "ITC", "BAJFINANCE", "BHARTIARTL", "KOTAKBANK", "SUNPHARMA", "HCLTECH", "MARUTI", "NESTLEIND",
@@ -25,12 +29,12 @@ fo_stocks = [
     "VEDL", "VOLTAS", "ZEEL"
 ]
 
-# --- User Inputs ---
-selected_stock = st.selectbox("Select F&O Stock", fo_stocks)
-expiry_choice = st.text_input("Enter expiry date (dd-mmm-yyyy)", value="")
-scan_button = st.button("🔍 Scan Live Options")
+# ------------------ User Inputs ------------------
+selected_stock = st.selectbox("📊 Select F&O Stock", fo_stocks)
+expiry_choice = st.text_input("📅 Enter expiry date (e.g., 28-Nov-2025)", value="")
+scan_button = st.button("🔍 Scan Live Option Chain")
 
-# --- Helper Function ---
+# ------------------ Helper Function ------------------
 def get_option_data(symbol):
     try:
         oc = nse_optionchain_scrape("NSE", symbol)
@@ -62,7 +66,7 @@ def get_option_data(symbol):
         st.warning(f"⚠️ Error fetching {symbol}: {e}")
         return None
 
-# --- Main Logic ---
+# ------------------ Main Logic ------------------
 if scan_button:
     with st.spinner(f"Fetching live option-chain data for {selected_stock}..."):
         df = get_option_data(selected_stock)
@@ -71,9 +75,13 @@ if scan_button:
         else:
             if expiry_choice:
                 df = df[df['Expiry'].str.contains(expiry_choice, case=False, na=False)]
-            # Volume spike logic: top 10 by volume
             df_sorted = df.sort_values(by="Volume", ascending=False).head(10)
-            st.success("✅ Live Data Fetched!")
-            st.dataframe(df_sorted)
+            st.success("✅ Live Data Fetched Successfully!")
+            st.dataframe(df_sorted, use_container_width=True)
+
             csv = df_sorted.to_csv(index=False).encode('utf-8')
             st.download_button("📥 Download CSV", csv, f"{selected_stock}_option_scan.csv", "text/csv")
+
+# ------------------ Footer ------------------
+st.markdown("---")
+st.caption("Developed by Gunvant 007 | Live NSE Data via nsepython | Version 2025.11")
